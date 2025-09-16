@@ -16,10 +16,10 @@ anchors = [
     ("7D", 7, 2),
     ("14D", 14, 2),
     ("1M", 30, 3),
-    ("2M", 60, 5),
-    ("3M", 90, 7),
-    ("6M", 180, 10),
-    ("1Y", 365, 15)
+    ("2M", 60, 7),
+    ("3M", 90, 10),
+    ("6M", 180, 30),
+    ("1Y", 365, 35)
 ]
 anchor_df = pd.DataFrame(anchors, columns=["bucket", "anchor_days", "tolerance"])
 
