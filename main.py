@@ -21,7 +21,7 @@ anchors = [
     ("6M", 180, 30),
     ("1Y", 365, 35)
 ]
-anchor_df = pd.DataFrame(anchors, columns=["bucket", "anchor_days", "tolerance"])
+anchor_df = pd.DataFrame(anchors, columns=["buckets", "anchor_days", "tolerance"])
 
 # map each expiry to some anchor if it satisfies tolerance
 def map_bucket(dte):
@@ -43,8 +43,18 @@ calls["mid"] = (calls["bid_1545"] + calls["ask_1545"]) / 2.0
 calls["spr"] = (calls["ask_1545"] - calls["bid_1545"]).clip(lower=0)
 calls["rel_spr"] = np.where(calls["mid"] > 0, calls["spr"]/calls["mid"], np.nan)
 
-# aggregate per ()
+# aggregate relative spread into median for each dte under each bucket
 liq = (calls.groupby(["quote_date","expiration","buckets","dte_days"])
        .agg(rel_spread_med=("rel_spr","median"))
        .reset_index())
-liq.to_csv("data/liq.csv")
+
+liq = pd.merge(liq, anchor_df, on="buckets", how="left")
+liq["abs_err"] = (liq["dte_days"] - liq["anchor_days"]).abs()
+
+# filter for df_spy rows that satisfy our ranking of dtes'
+keep = (liq.sort_values(["quote_date","buckets","abs_err","rel_spread_med"])
+        .drop_duplicates(["quote_date","buckets"])
+        [["quote_date","expiration","buckets"]])
+
+df_kept = df_spy.merge(keep, on=["quote_date","expiration","buckets"], how="inner")
+df_kept.to_csv("data/df_kept.csv")
