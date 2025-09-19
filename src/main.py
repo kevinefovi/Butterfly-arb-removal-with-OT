@@ -68,5 +68,6 @@ def ot_processing(df):
 
     d["w_star"] = w_star
     d["iv_star"] = iv_star
+    d["fwd_var_star"] = fwd_var_star
 
     return d
