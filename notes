@@ -1,6 +1,0 @@
-SSVi calibratgion fits a equation so that a smooth, continuous IV surface is procured from raw quotes.
-This fit follows 5 parameters, making it strict in shape w/ vega-weighted weights so ATM (liquid) points matter more
-
-Idea is to implement OT inspired weights so that quotes at tails aren't underfit, causing parameter whipsaw and increasing error
-This hopefully will produce better fitted wings at little to no cost ATM
-

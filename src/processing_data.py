@@ -57,4 +57,3 @@ keep = (liq.sort_values(["quote_date","buckets","abs_err","rel_spread_med"])
         [["quote_date","expiration","buckets"]])
 
 df_kept = df_spy.merge(keep, on=["quote_date","expiration","buckets"], how="inner")
-df_kept.to_csv("data/df_kept.csv")
