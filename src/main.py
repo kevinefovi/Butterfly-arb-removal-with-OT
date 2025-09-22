@@ -153,7 +153,7 @@ df = pd.read_csv("data/raw_options.csv")
 strikes, call_targets, forward, discount = parity_regression(df, "AAP", "2019-02-15")
 
 # assume R = 1.0 and S0 := F
-# most mass is within +-(k*vol*sqrt(T)), so we construct a grid on k=4
+# most mass is within +-(k*vol*sqrt(T)), so we construct a grid on k~7
 # and use a uniform prior for showcase
 
 y = np.linspace(forward*0.75, forward*1.25, 200)
