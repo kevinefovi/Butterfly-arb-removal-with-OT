@@ -1,167 +1,166 @@
 import numpy as np
-import pandas as pd 
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 
-"""
-Given an EOD options surface:
+def fit_slice(y, m, strikes, call_targets, S0, R=1.0, tol=1e-10, max_iter=50):
+    # future underlying levels at some fixed maturity
+    y = np.asarray(y, float)
+    # the baseline weights assigned to each y (our prior pmf)
+    m = np.asarray(m, float)
+    m = m / m.sum()
+    K = np.asarray(strikes, float)
+    # the moment targets our fitted law must match (fall inside the market bands)
+    # + risk neutral mean (we assume R is 1 for simplicity reasons)) 
+    targets = list(call_targets) + [S0*R, 1.0]
 
-- add_bucket_labels() bundles options into buckets
-- pick_representative_expiries() picks exactly 1 expiry date per bucket (ranked by distance to anchor and then relative spread)
+    # we a build a feature matrix where:
+    # - rows are future underlying levels (states) 
+    # - columns are functions evaluated at that state
+    # so the matrix entries are payoffs evaluated at that state
 
-This processes the data which can be passed through:
+    # the feature matrix's functions hold the function whose expectations will be matched
+    payoffs = np.maximum(y[:, None] - K[None, :], 0.0)
+    Phi = np.column_stack([payoffs, y[:, None], np.ones_like(y)[:, None]])
+    targets = np.asarray(targets, float)
+    nfeat = Phi.shape[1]
 
-- check_calendar_monotonicity() which detects calendar arbitrage at a given log moneyness slice (uses slice_through_maturity as helper)
-- pass slice with calendar arbitrage to ot_processing which will update the IV to eliminate the negative forward variance 
+    # dual variables which when adjusted, titls the prior to hit the targets
+    lam = np.zeros(nfeat)
 
-Example anchors argument:
+    # generates a candidate probability distribution 
+    # if you price calls under this probability distribution, the call price at K 
+    # is the expected payoff of (S - K), so the call curve is butterfly free (decreasing in strike and convex)
+    def pmf_from_lambda(lam):
+        # keep the prior strictly positive (extremely small value to ensure well defined computations)
+        eps = 1e-300
+        m_pos = np.clip(m, eps, None)
+        m_pos = m_pos / m_pos.sum()
 
-anchors = [
-    ("7D", 7, 2),
-    ("14D", 14, 2),
-    ("1M", 30, 3),
-    ("2M", 60, 7),
-    ("3M", 90, 10),
-    ("6M", 180, 30),
-    ("1Y", 365, 35)
-]
-"""
+        # we work in the log space
+        # previously, w = m * exp(Phi @ lam) blew up when 'Phi @ lam' took on large values 
+        # and if the prior has zeros 
+        a = Phi @ lam
+        logw = np.log(m_pos) + a
+
+        # log sum exp normalization, preventing overflow
+        c = np.max(logw)
+        w = np.exp(logw - c)
+        Z = np.sum(w)
+
+        P = w / Z
+        # return normalized P
+        return P, (c + np.log(Z))
 
 
-def add_bucket_labels(df, 
-                      anchors, 
-                      buckets="buckets",
-                      underlying_symbol="underlying_symbol",
-                      symbol="SPY"):
-    # labels options into buckets
-    # assuming df has "quote_date" and "expiration"
-    res = df[df[underlying_symbol]==symbol].copy()
-    res["quote_date"] = pd.to_datetime(res["quote_date"])
-    res["expiration"] = pd.to_datetime(res["expiration"])
-    res["dte"] = (res["expiration"] - res["quote_date"]).dt.days
+    for it in range(max_iter):
+        P, Z = pmf_from_lambda(lam)
+        moments = Phi.T @ P
+        # mismatch between model and market
+        g = moments - targets
 
-    def map_bucket(dte):
-        best = None; best_err = np.inf
-        for name, a, tol in anchors:
-            err = abs(dte - a)
-            if err <= tol and err < best_err:
-                best, best_err = name, err
-        return best
+        # stop if all moments match
+        if np.linalg.norm(g, ord=np.inf) < tol:
+            break
 
-    res[buckets] = res["dte"].apply(map_bucket)
-    return res
+        # covariance of features under candidate probability distribution 
+        E_phi_phiT = (Phi * P[:, None]).T @ Phi
+        H = E_phi_phiT - np.outer(moments, moments)
 
-def pick_representative_expiries(df,
-                                 anchors,
-                                 option="C",
-                                 option_type="option_type",
-                                 quote="quote_date",
-                                 expiration="expiration",
-                                 buckets="buckets",
-                                 bid="bid_1545",
-                                 ask="ask_1545"):
-    # from df buckets and dte columns, pick at most 1 expiry per bucket
-    # ranked by distance to anchor then by liquidity 
-    # returns a df with only the chosen expiries 
+        # works out what the new dual should look like
+        try:
+            delta = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            # Hessian H is a covariance matrix of features, so if some features are slightly linear 
+            # cominbations of others, H has very small eigenvalues
 
-    anchor_df = pd.DataFrame(anchors, columns=["buckets", "anchor_days", "tolerance"])
+            # So solving for H delta = g requires dividing by these tiny eigenvalues, blowing up delta 
+            # we use gentle tikhonov and shift every eigenvalue up by some tiny e, so we get an invertile and well conditioned 
+            # matrix
+            H_reg = H + 1e-10 * np.eye(nfeat)
+            delta = np.linalg.solve(H_reg, g)
 
-    res = df.copy()
-    res = res[res[option_type] == option]
+        # full steps can be too aggressive, so we shrink the step size until the new iterate sees improvement
+        step = 1.0
+        for _ in range(20):
+            P_try, _ = pmf_from_lambda(lam - step * delta)
+            # if the new moment errors dont sufficiently decrease, we scale down step
+            moments_try = Phi.T @ P_try
+            if np.linalg.norm(moments_try - targets, np.inf) <= (1 - 0.5*step) * np.linalg.norm(g, np.inf):
+                break
+            step *= 0.5
 
-    # mid / relative spread 
-    res["mid"] = (res[bid] + res[ask]) / 2.0
-    res["spr"] = (res[ask] - res[bid]).clip(lower=0)
-    res["rel_spr"] = np.where(res["mid"] > 0, res["spr"] / res["mid"], np.nan)
+        lam -= step * delta
 
-    # median rel spread per expiry within bucket/day
-    liq = (res.groupby([quote, expiration, buckets, "dte"])
-             .agg(rel_spread_med=("rel_spr", "median"))
-             .reset_index())
+    # final 
+    P, _ = pmf_from_lambda(lam)
+    model_calls = (payoffs.T @ P)
+    return P, model_calls
 
-    liq = liq.merge(anchor_df, on="buckets", how="left")
-    liq["abs_err"] = (liq["dte"] - liq["anchor_days"]).abs()
+def parity_regression(df, act_symbol, expiration):
+    # OT solver assumes undiscounted targets
+    df_slice = df[(df["act_symbol"]==act_symbol) & (df["expiration"]==expiration)].copy()
+    df_slice["mid"] = 0.5*(df["bid"] + df["ask"])
+    df_pivot = (df_slice.pivot_table(index=["act_symbol", "expiration", "strike"], columns="call_put", values="mid")
+                .rename(columns={"Call":"Call_mid", "Put":"Put_mid"})
+                .rename_axis(None, axis=1)
+                .reset_index())
+    
+    # y = C - P, DF := intercept and D := slope on -K
+    # design matrix X = [1, -K]
+    K = df_pivot["strike"].values.astype(float)
+    y = (df_pivot["Call_mid"] - df_pivot["Put_mid"]).values.astype(float)
+    X = np.column_stack([np.ones_like(K), -K])
+    
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    intercept, slope = beta 
 
-    # rank: closest to anchor, then tighter spread
-    keep = (liq.sort_values([quote, buckets, "abs_err", "rel_spread_med"])
-              .drop_duplicates([quote, buckets])[[quote, expiration, buckets]])
+    # discount factor has to be positive, otherwise arbitrage 
+    D = max(1e-12, slope)
+    F = intercept / D
 
-    # keep all rows (calls+puts if you want) for the chosen (date, expiry, bucket)
-    df_kept = df.merge(keep, on=[quote, expiration, buckets], how="inner")
-    return df_kept
+    # finally return undisc call targets, and we'll work in forward units
+    df_pivot["undiscounted_call_targets"] = df_pivot["Call_mid"] / D
+    strikes = df_pivot["strike"].values.astype(float)
+    call_targets = df_pivot["undiscounted_call_targets"].values.astype(float)
 
-# Calendar arbitrage logic 
+    return strikes, call_targets, F, D
 
-def slice_through_maturities(df, 
-                             m_target, 
-                             strike="strike",
-                             spot="active_underlying_price_1545"):
+def plot_reweighting(y, m, P, title="Prior vs Fitted PMF (mass reweighting)"):
 
-    # returns one option per bucket closest to the given log moneyness
-    res = df.copy()
-    res["m"] = np.log(res[strike] / res[spot])
-    closest = (
-        res.assign(dist=(res["m"] - m_target).abs())
-        .sort_values(["buckets", "dist"])
-        .drop_duplicates(subset="buckets", keep="first")
-        .sort_values("dte")
-        .reset_index(drop=True)
-    )
+    idx = np.arange(len(y))
+    width = 0.35
 
-    return closest
+    fig, ax = plt.subplots(figsize=(8, 4.5))
 
-def check_calendar_monotonicity(df, 
-                                m_target,
-                                strike="strike",
-                                spot="active_underlying_price_1545",
-                                iv="implied_volatility_1545"):
-    res = slice_through_maturities(df, m_target).copy()
-    res["T"] = res["dte"] / 365.0
+    b1 = ax.bar(idx - width/2, m, width, label="Prior pmf m", alpha=0.7, edgecolor="black", linewidth=0.5)
+    b2 = ax.bar(idx + width/2, P, width, label="Fitted pmf P", alpha=0.7, edgecolor="black", linewidth=0.5)
 
-    # total variance (accumlating variance to T)
-    res["w"] = (res["implied_volatility_1545"]**2)*res["T"]
-    res["dt"] = res["T"].diff()
-    res["dw"] = res["w"].diff()
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=8, prune=None))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}"))
+    ax.set_xlabel("Future underlying level (grid)")
 
-    # forward variance
-    res["fwd_var"] = res["dw"] / res["dt"] # slope of w 
-    res["has_violation"] = res["fwd_var"] < 0
-    has_arb = res["has_violation"].fillna(False).any()
+    ax.set_ylabel("Probability mass")
+    ax.legend(loc="upper right")
+    ax.grid(axis="y", alpha=0.25)
 
-    print("Calendar spread: ", "yes" if has_arb else "no")
+    plt.title(title)
+    plt.tight_layout()
+    plt.show()
 
-def ot_processing(df, iv="implied_volatility_1545"):
-    res = df.copy()
-    res["T"] = res["dte"] / 365.0
-    T = res["T"].to_numpy()
-    iv = res[iv].to_numpy()
-    w = (iv**2)*T
+df = pd.read_csv("data/raw_options.csv")
+# we take the slice at "2019-02-15" for underlying "AAP" as an example
+strikes, call_targets, forward, discount = parity_regression(df, "AAP", "2019-02-15")
 
-    dT = np.diff(T)
-    dw = np.diff(w)
-    fwd_var = dw / dT
+# assume R = 1.0 and S0 := F
+# most mass is within +-(k*vol*sqrt(T)), so we construct a grid on k=4
+# and use a uniform prior for showcase
 
-    # 
+y = np.linspace(forward*0.75, forward*1.25, 200)
+m = np.ones_like(y, dtype=float)
+m /= m.sum()    
 
-    # pass the negative forward variance to the right
-    fwd_var_star = fwd_var.copy()
-    deficit = 0.0
-    for i in range(len(fwd_var_star)):
-        fwd_var_star[i] += deficit
-        if fwd_var_star[i] < 0:
-            deficit = fwd_var_star[i]
-            fwd_var_star[i] = 0.0
-        else:
-            deficit = 0.0
+P, model_calls = fit_slice(y, m, strikes, call_targets, forward)
+print(f"Undiscounted: {model_calls}\nDiscounted: {model_calls*discount}")
 
-    w_star = np.empty_like(w)
-    w_star[0] = max(w[0], 0.0)
-    for i in range(1, len(w)):
-        w_star[i] = w_star[i-1] + fwd_var_star[i-1] * dT[i-1]
-    iv_star = np.sqrt(np.maximum(w_star / T, 0.0))
-
-    fwd_var_star = np.r_[np.nan, fwd_var_star]
-
-    res["w_star"] = w_star
-    res["iv_star"] = iv_star
-    res["fwd_var_star"] = fwd_var_star
-
-    return res
+plot_reweighting(y, m, P)
