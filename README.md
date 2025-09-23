@@ -19,5 +19,3 @@ Example options data: https://www.dolthub.com/repositories/post-no-preference/op
 # 
 
 The obvious next step is to extend to multiple maturities and impose cross maturity constraints to achieve a static arbitrage free surface overall.
-
-(Personal Project)
