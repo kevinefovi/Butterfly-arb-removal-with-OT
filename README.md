@@ -1,13 +1,17 @@
 # Entropic OT calibration of a single options slice 
 
-I coded an aspect of 'Building arbitrage-free implied volatility: Sinkhorn’s algorithm and variants' by Hadrien De March and Pierre Henry-Labordère which, given vanilla quotes at 1 expiry and some pre defined prior, a risk neutral pmf P is found which reproduces the market's quotes and is butterfly arbitrage free by construction. The entropic OT solver works in undiscounted terms, so we estimated the discount factor and forward price via parity regression on a given slice. This repo is not an implementation of the paper, since we only fit 1 slice at a time meaning calendar arbitrage is not eliminated. 
+Given vanilla quotes at 1 expiry and a positive prior, a risk neutral pmf P is found such that for each strike, the undiscounted model call value matches the market target. Since prices are expectations under a pmf, the slice is free of butterfly arbitrage. This doesn't completely eliminate static arbitrage as only 1 slice at a time is calibrated, meaning calendar arbitrage isn't constrained for. The entropic OT solver works in undiscounted terms, so we estimated the discount factor and forward price via parity regression on a given slice.
 
-Given our uniform prior, the implied call payoffs don't match the market targets. Over infinitely many exponential tilts of the prior, amongst the ones that reproduce the market's quotes and is butterfly arbitrage free, the KL closest one to the prior is picked.
+Given the naive selection of a uniform prior, the implied call payoffs don't match the market. The procedure solves in the dual (undiscounted call payoffs, mean and mass) instead of optimizing over the entire pmf P on an m point grid (high dimensional). Convergence is relatively quick because of this.
+
+Most importantly, priors allow you to encode information about the market into your model and the entropic OT step then moves the minimal amount of 'mass' to satisfy the constraints, leaving your structure (beliefs) intact elsewhere.
 
 #
 
-The prior pmf and the fitted pmf are plotted, showing the movement of probability mass under a uniform prior for an example slice.
+The prior pmf and the fitted pmf are plotted for an example slice, showing the movement of probability mass under a uniform prior.
 
-<img width="800" height="450" alt="final_fig" src="https://github.com/user-attachments/assets/d1c7dec1-9845-414f-9b9f-9ab73a7f3fcf" />
+<img width="800" height="450" alt="Figure_2" src="https://github.com/user-attachments/assets/6bf1ceec-e954-46bc-b71b-b709282bba3c" />
+
+Symbol: "AAP", expiry: "2019-02-15"
 
 Example options data: https://www.dolthub.com/repositories/post-no-preference/options/data/master/option_chain
