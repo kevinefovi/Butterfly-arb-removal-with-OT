@@ -15,3 +15,7 @@ The prior pmf and the fitted pmf are plotted for an example slice, showing the m
 Symbol: "AAP", expiry: "2019-02-15"
 
 Example options data: https://www.dolthub.com/repositories/post-no-preference/options/data/master/option_chain
+
+# 
+
+The obvious next step is to extend to multiple maturities to remove static arbitrage all in all.
